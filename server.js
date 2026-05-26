@@ -37,6 +37,12 @@ import { createReporter, createTabHealthTracker, collectResourceSnapshot, classi
 import { mountDocs } from './lib/openapi.js';
 import { initSentry, captureException as sentryCaptureException, setupExpressErrorHandler as setupSentryErrorHandler, flush as sentryFlush } from './lib/sentry.js';
 import { prepareExternalCamoufoxExecutable } from './lib/camoufox-executable.js';
+import {
+  attachNetworkConsole,
+  injectNetworkInterceptor,
+  getConsoleLogs,
+  getNetworkEntries,
+} from './lib/network-console.js';
 
 const CONFIG = loadConfig();
 
@@ -1466,7 +1472,7 @@ function tabNotFoundResponse(res, tabId) {
 
 function createTabState(page) {
   const healthTracker = createTabHealthTracker(page);
-  return {
+  const tabState = {
     page,
     refs: new Map(),
     visitedUrls: new Set(),
@@ -1483,6 +1489,8 @@ function createTabState(page) {
     pressureObservedAt: Date.now(),
     pressureObservedToolCalls: 0,
   };
+  attachNetworkConsole(page, tabState);
+  return tabState;
 }
 
 /**
@@ -4408,6 +4416,279 @@ app.post('/tabs/:tabId/evaluate', authMiddleware(), express.json({ limit: '1mb' 
     failuresTotal.labels(classifyError(err), 'evaluate').inc();
     log('error', 'evaluate failed', { reqId: req.reqId, error: err.message });
     res.status(500).json({ error: safeError(err) });
+  }
+});
+
+// --- Console & Network capture routes (Lena's enhancements) ---
+
+/**
+ * @openapi
+ * /tabs/{tabId}/console:
+ *   get:
+ *     tags: [Browser]
+ *     summary: Get captured console logs for a tab
+ *     parameters:
+ *       - name: tabId
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *       - name: userId
+ *         in: query
+ *         required: true
+ *         schema:
+ *           type: string
+ *       - name: type
+ *         in: query
+ *         required: false
+ *         schema:
+ *           type: string
+ *           enum: [log, warn, error, info, pageerror]
+ *       - name: limit
+ *         in: query
+ *         required: false
+ *         schema:
+ *           type: integer
+ *           default: 100
+ *       - name: clear
+ *         in: query
+ *         required: false
+ *         schema:
+ *           type: boolean
+ *           default: false
+ *     responses:
+ *       200:
+ *         description: Console logs retrieved.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok:
+ *                   type: boolean
+ *                 logs:
+ *                   type: array
+ *       404:
+ *         description: Tab not found.
+ */
+app.get('/tabs/:tabId/console', authMiddleware(), async (req, res) => {
+  try {
+    const { userId } = req.query;
+    if (!userId) return res.status(400).json({ error: 'userId is required' });
+    const session = sessions.get(normalizeUserId(userId));
+    const found = session && findTab(session, req.params.tabId);
+    if (!found) return tabNotFoundResponse(res, req.params.tabId);
+    session.lastAccess = Date.now();
+    const logs = getConsoleLogs(found.tabState, {
+      type: req.query.type || undefined,
+      limit: parseInt(req.query.limit || '100', 10),
+      clear: req.query.clear === 'true',
+    });
+    res.json({ ok: true, logs });
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+/**
+ * @openapi
+ * /tabs/{tabId}/console/clear:
+ *   post:
+ *     tags: [Browser]
+ *     summary: Clear console logs for a tab
+ *     parameters:
+ *       - name: tabId
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [userId]
+ *             properties:
+ *               userId:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Logs cleared.
+ */
+app.post('/tabs/:tabId/console/clear', authMiddleware(), async (req, res) => {
+  try {
+    const { userId } = req.body;
+    if (!userId) return res.status(400).json({ error: 'userId is required' });
+    const session = sessions.get(normalizeUserId(userId));
+    const found = session && findTab(session, req.params.tabId);
+    if (!found) return tabNotFoundResponse(res, req.params.tabId);
+    found.tabState.consoleLogs = [];
+    res.json({ ok: true });
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+/**
+ * @openapi
+ * /tabs/{tabId}/network:
+ *   get:
+ *     tags: [Browser]
+ *     summary: Get captured network requests for a tab
+ *     parameters:
+ *       - name: tabId
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *       - name: userId
+ *         in: query
+ *         required: true
+ *         schema:
+ *           type: string
+ *       - name: resourceType
+ *         in: query
+ *         required: false
+ *         schema:
+ *           type: string
+ *       - name: method
+ *         in: query
+ *         required: false
+ *         schema:
+ *           type: string
+ *       - name: limit
+ *         in: query
+ *         required: false
+ *         schema:
+ *           type: integer
+ *           default: 100
+ *       - name: clear
+ *         in: query
+ *         required: false
+ *         schema:
+ *           type: boolean
+ *           default: false
+ *     responses:
+ *       200:
+ *         description: Network entries retrieved.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 ok:
+ *                   type: boolean
+ *                 entries:
+ *                   type: array
+ *       404:
+ *         description: Tab not found.
+ */
+app.get('/tabs/:tabId/network', authMiddleware(), async (req, res) => {
+  try {
+    const { userId } = req.query;
+    if (!userId) return res.status(400).json({ error: 'userId is required' });
+    const session = sessions.get(normalizeUserId(userId));
+    const found = session && findTab(session, req.params.tabId);
+    if (!found) return tabNotFoundResponse(res, req.params.tabId);
+    session.lastAccess = Date.now();
+    const entries = getNetworkEntries(found.tabState, {
+      resourceType: req.query.resourceType || undefined,
+      method: req.query.method || undefined,
+      limit: parseInt(req.query.limit || '100', 10),
+      clear: req.query.clear === 'true',
+    });
+    res.json({ ok: true, entries });
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+/**
+ * @openapi
+ * /tabs/{tabId}/network/clear:
+ *   post:
+ *     tags: [Browser]
+ *     summary: Clear network entries for a tab
+ *     parameters:
+ *       - name: tabId
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [userId]
+ *             properties:
+ *               userId:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Network entries cleared.
+ */
+app.post('/tabs/:tabId/network/clear', authMiddleware(), async (req, res) => {
+  try {
+    const { userId } = req.body;
+    if (!userId) return res.status(400).json({ error: 'userId is required' });
+    const session = sessions.get(normalizeUserId(userId));
+    const found = session && findTab(session, req.params.tabId);
+    if (!found) return tabNotFoundResponse(res, req.params.tabId);
+    found.tabState.networkEntries = [];
+    res.json({ ok: true });
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+/**
+ * @openapi
+ * /tabs/{tabId}/network/inject:
+ *   post:
+ *     tags: [Browser]
+ *     summary: Inject fetch/XHR interceptor into the page
+ *     description: |
+ *       Injects JavaScript that overrides window.fetch and XMLHttpRequest
+ *       so all subsequent requests are logged to window.__camofox_network_log.
+ *       Read the log via POST /tabs/{tabId}/evaluate with expression
+ *       `window.__camofox_network_log`.
+ *     parameters:
+ *       - name: tabId
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [userId]
+ *             properties:
+ *               userId:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Interceptor injected.
+ *       404:
+ *         description: Tab not found.
+ */
+app.post('/tabs/:tabId/network/inject', authMiddleware(), async (req, res) => {
+  try {
+    const { userId } = req.body;
+    if (!userId) return res.status(400).json({ error: 'userId is required' });
+    const session = sessions.get(normalizeUserId(userId));
+    const found = session && findTab(session, req.params.tabId);
+    if (!found) return tabNotFoundResponse(res, req.params.tabId);
+    session.lastAccess = Date.now();
+    await injectNetworkInterceptor(found.tabState.page);
+    res.json({ ok: true, injected: true });
+  } catch (err) {
+    sendError(res, err);
   }
 });
 
