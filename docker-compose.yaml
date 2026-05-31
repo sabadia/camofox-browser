@@ -18,10 +18,18 @@ services:
       # Set CAMOFOX_API_KEY if exposing beyond localhost
       NODE_ENV: development
       CAMOFOX_PORT: 9377
-      # MAX_OLD_SPACE_SIZE: 
+      # MAX_OLD_SPACE_SIZE:
+      # Keep browser session persistent
+
+      CAMOFOX_PERSISTENT_CONTEXT: "true"
+
+      # Memory tuning
+
+      # MAX_OLD_SPACE_SIZE: 2048 
       MAX_OLD_SPACE_SIZE: 2048          # Node.js heap: 2GB
       BROWSER_RSS_RESTART_THRESHOLD_MB: 4000   # Allow 4GB Firefox
       NATIVE_MEM_RESTART_THRESHOLD_MB: 800
+      AUTO_RESTART_BROWSER: "true"
       # Optional: CAMOFOX_API_KEY=your-secret-key-here
     volumes:
       # Persist browser profiles between restarts
@@ -46,6 +54,7 @@ services:
       - SYS_ADMIN
     security_opt:
       - seccomp:unconfined
+#    stop_grace_period: 60s
 
 volumes:
   camofox-profiles:
