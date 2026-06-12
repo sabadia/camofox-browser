@@ -22,6 +22,7 @@ services:
       # Keep browser session persistent
 
       CAMOFOX_PERSISTENT_CONTEXT: "true"
+      CAMOFOX_API_KEY: "${CAMOFOX_API_KEY}"
 
       # Memory tuning
 
