@@ -2,7 +2,7 @@ services:
   camofox-browser:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.ci
       args:
         ARCH: x86_64
         CAMOUFOX_VERSION: 135.0.1
