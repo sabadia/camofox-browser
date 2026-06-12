@@ -1,0 +1,60 @@
+services:
+  camofox-browser:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        ARCH: x86_64
+        CAMOUFOX_VERSION: 135.0.1
+        CAMOUFOX_RELEASE: beta.24
+    image: camofox-browser:local
+    container_name: camofox-browser
+    hostname: camofox-browser
+    restart: unless-stopped
+    ports:
+      - "9377:9377"
+    environment:
+      # Local dev mode: no strict auth needed for private networks
+      # Set CAMOFOX_API_KEY if exposing beyond localhost
+      NODE_ENV: development
+      CAMOFOX_PORT: 9377
+      # MAX_OLD_SPACE_SIZE:
+      # Keep browser session persistent
+
+      CAMOFOX_PERSISTENT_CONTEXT: "true"
+
+      # Memory tuning
+
+      # MAX_OLD_SPACE_SIZE: 2048 
+      MAX_OLD_SPACE_SIZE: 2048          # Node.js heap: 2GB
+      BROWSER_RSS_RESTART_THRESHOLD_MB: 4000   # Allow 4GB Firefox
+      NATIVE_MEM_RESTART_THRESHOLD_MB: 800
+      AUTO_RESTART_BROWSER: "true"
+      # Optional: CAMOFOX_API_KEY=your-secret-key-here
+    volumes:
+      # Persist browser profiles between restarts
+      - camofox-profiles:/root/.cache/camoufox
+      # Live reload of local plugins
+      - ./plugins:/app/plugins:ro
+      # Live reload of config
+      - ./camofox.config.json:/app/camofox.config.json:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9377/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+    # Required for Firefox/Chromium inside Docker
+    shm_size: 4gb
+    cap_add:
+      - SYS_ADMIN
+    security_opt:
+      - seccomp:unconfined
+#    stop_grace_period: 60s
+
+volumes:
+  camofox-profiles:
